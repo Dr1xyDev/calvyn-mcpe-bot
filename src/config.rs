@@ -1,6 +1,6 @@
 use std::fs;
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, serde::Serialize)]
 pub struct Device {
     #[serde(default)]
     pub device_id: String,
@@ -19,14 +19,18 @@ pub struct Device {
 impl Device {
     pub fn load() -> Self {
         let data = fs::read_to_string("config.json").unwrap_or_default();
-        serde_json::from_str(&data).unwrap_or_default()
+        let mut dev: Device = serde_json::from_str(&data).unwrap_or_default();
+        if dev.device_id.is_empty() {
+            dev.device_id = gen_id();
+        }
+        dev
     }
 }
 
 impl Default for Device {
     fn default() -> Self {
         Self {
-            device_id: String::new(),
+            device_id: gen_id(),
             device_model: default_model(),
             device_os: default_os(),
             game_version: default_game_ver(),
@@ -41,3 +45,12 @@ fn default_os() -> i32 { 1 }
 fn default_game_ver() -> String { "1.1.5".to_string() }
 fn default_skin() -> String { "Standard_Custom".to_string() }
 fn default_lang() -> String { "en_US".to_string() }
+
+fn gen_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("{:032x}", now)
+}
