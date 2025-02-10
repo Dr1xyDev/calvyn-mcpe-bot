@@ -1,3 +1,4 @@
+/// Minecraft § коды в ANSI
 pub fn mc_to_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     let mut chars = s.chars().peekable();
