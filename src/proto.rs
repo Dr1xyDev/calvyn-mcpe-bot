@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const VER: u32 = 115;
+pub const VER: u32 = 113;
 
 pub const MC_VER: &str = "1.1.5";
 
