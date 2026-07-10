@@ -6,7 +6,7 @@ pub mod log;
 pub mod proto;
 pub mod raknet;
 
-use client::{make_login_packet, Client, MTU};
+use client::{make_login_packet, set_interrupted, Client, MTU};
 use config::Device;
 use log::{banner, bot, cmd_exit, err, start, user};
 use crypto::AuthKey;
@@ -17,18 +17,14 @@ use std::ffi::CStr;
 use std::io::{self, Write};
 use std::net::UdpSocket;
 use std::os::raw::{c_char, c_int};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 
 fn setup_ctrlc_handler() {
-    let interrupted = Arc::new(AtomicBool::new(false));
-    let interrupted_flag = interrupted.clone();
     ctrlc::set_handler(move || {
-        interrupted_flag.store(true, Ordering::SeqCst);
+        set_interrupted();
     })
     .ok();
 }
@@ -39,6 +35,7 @@ pub struct Config {
     pub port: u16,
     pub name: String,
     pub protocol: u32,
+    pub count: u32,
 }
 
 #[no_mangle]
@@ -70,6 +67,7 @@ pub extern "C" fn RunBot(host_ptr: *const c_char, port: c_int, name_ptr: *const 
         port: port as u16,
         name,
         protocol: proto::VER,
+        count: 1,
     };
 
     match run_client(cfg) {
@@ -82,8 +80,50 @@ pub extern "C" fn RunBot(host_ptr: *const c_char, port: c_int, name_ptr: *const 
 }
 
 pub fn run_client(cfg: Config) -> io::Result<()> {
-    let server = to_addr(&cfg.host, cfg.port)?;
+    if cfg.count <= 1 {
+        return run_single_bot(cfg, true);
+    }
+
     banner();
+    bot(&format!(
+        "modo multihilo: lanzando {} bots contra {}:{}",
+        cfg.count, cfg.host, cfg.port
+    ));
+
+    setup_ctrlc_handler();
+
+    let mut handles = Vec::with_capacity(cfg.count as usize);
+    for i in 1..=cfg.count {
+        let mut bot_cfg = cfg.clone();
+        bot_cfg.name = format!("{}_{}", cfg.name, i);
+        bot_cfg.count = 1;
+
+        let handle = thread::spawn(move || {
+            if let Err(e) = run_single_bot(bot_cfg.clone(), false) {
+                err(&format!("[{}] error: {}", bot_cfg.name, e));
+            }
+        });
+        handles.push(handle);
+
+        // Escalonamos el arranque para no saturar el servidor con handshakes simultáneos
+        thread::sleep(Duration::from_millis(250));
+    }
+
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    bot("todos los bots han terminado");
+    Ok(())
+}
+
+/// Corre un único bot de principio a fin. `interactive` controla si se levanta el
+/// hilo de stdin para mandar chat/comandos (solo tiene sentido con un bot a la vez).
+fn run_single_bot(cfg: Config, interactive: bool) -> io::Result<()> {
+    let server = to_addr(&cfg.host, cfg.port)?;
+    if interactive {
+        banner();
+    }
     start(&cfg.host, cfg.port, &cfg.name);
 
     let auth = AuthKey::new();
@@ -134,8 +174,8 @@ pub fn run_client(cfg: Config) -> io::Result<()> {
         pos: (0.0, 64.0, 0.0),
         yaw: 0.0,
         pitch: 0.0,
-        dump: open_pkt_log("")?,
-        raw_dump: open_pkt_log("")?,
+        dump: open_pkt_log(&cfg.name)?,
+        raw_dump: open_pkt_log(&format!("{}_raw", cfg.name))?,
         start: Instant::now(),
         chunk_radius: 8,
         spawn_fallback_ms: 8000,
@@ -165,8 +205,8 @@ pub fn run_client(cfg: Config) -> io::Result<()> {
         event_log: VecDeque::new(),
         status_text: "connecting".to_string(),
         last_text_line: String::new(),
-        
-        
+
+
         spawn_x: 0.0,
         spawn_z: 0.0,
         movement_phase: 0,
@@ -174,7 +214,9 @@ pub fn run_client(cfg: Config) -> io::Result<()> {
         movement_enabled: true,
     };
 
-    setup_ctrlc_handler();
+    if interactive {
+        setup_ctrlc_handler();
+    }
 
     let mut rng = rand::thread_rng();
 
@@ -194,35 +236,47 @@ pub fn run_client(cfg: Config) -> io::Result<()> {
 
     thread::sleep(Duration::from_millis(rng.gen_range(500..1500)));
 
-    let (tx, rx) = mpsc::channel::<String>();
+    if interactive {
+        let (tx, rx) = mpsc::channel::<String>();
 
-    let exit_tx = tx.clone();
-    thread::spawn(move || loop {
-        let mut line = String::new();
-        if io::stdin().read_line(&mut line).is_ok() {
-            let trimmed = line.trim().to_string();
-            if trimmed == "/exit" || trimmed == "/quit" {
-                cmd_exit();
-                io::stdout().flush().ok();
-                let _ = exit_tx.send("__EXIT__".to_string());
-                break;
-            }
-            if !trimmed.is_empty() {
-                user(&trimmed);
-                io::stdout().flush().ok();
-                if tx.send(trimmed).is_err() {
+        let exit_tx = tx.clone();
+        thread::spawn(move || loop {
+            let mut line = String::new();
+            if io::stdin().read_line(&mut line).is_ok() {
+                let trimmed = line.trim().to_string();
+                if trimmed == "/exit" || trimmed == "/quit" {
+                    cmd_exit();
+                    io::stdout().flush().ok();
+                    let _ = exit_tx.send("__EXIT__".to_string());
                     break;
                 }
+                if !trimmed.is_empty() {
+                    user(&trimmed);
+                    io::stdout().flush().ok();
+                    if tx.send(trimmed).is_err() {
+                        break;
+                    }
+                }
+            } else {
+                break;
             }
-        } else {
-            break;
-        }
-    });
+        });
 
-    client.run(0, Some(rx), None)?;
+        client.run(0, Some(rx), None)?;
+    } else {
+        // En modo multihilo no hay consola interactiva compartida entre bots;
+        // cada uno corre su loop de red de forma independiente hasta desconectarse.
+        // Usamos run_headless para que no compitan leyendo eventos de teclado del
+        // mismo terminal (eso daba comportamiento errático con varios bots a la vez).
+        client.run_headless(0, None, None)?;
+    }
 
     client.disconnect()?;
 
-    bot(&format!("завершён, был в сети {} сек.", client.start.elapsed().as_secs()));
+    bot(&format!(
+        "[{}] завершён, был в сети {} сек.",
+        cfg.name,
+        client.start.elapsed().as_secs()
+    ));
     Ok(())
 }
