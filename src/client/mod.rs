@@ -1,4 +1,4 @@
- #![allow(dead_code)]
+#![allow(dead_code)]
 #![allow(unused_variables)]
 
 pub mod packets;
@@ -622,7 +622,12 @@ impl Client {
                 self.push_event(format!("[отключение] {reason}"));
                 self.disconnected = true;
             }
-            0x06 => self.on_packs(payload)?,
+            0x06 => {
+                // ResourcePacksInfo — skip downloading, immediately say "have all packs"
+                // This works for Submarine/multi-version servers that don't verify
+                self.sent_have_all_packs = true;
+                self.send_resource_pack_response(3, &[])?;
+            },
             0x07 => {
                 let ids = self.pack_ids.clone();
                 self.send_resource_pack_response(4, &ids)?;
