@@ -36,17 +36,15 @@ jobs:
       run: |
         mkdir -p ~/.cargo
         NDK_TOOLCHAIN="${{ steps.setup_ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-        
-        cat > ~/.cargo/config.toml << 'TOMLEOF'
-[target.aarch64-linux-android]
-TOMLEOF
-        
-        # Append linker and ar (valid cargo config keys)
-        echo "linker = \"${NDK_TOOLCHAIN}/aarch64-linux-android24-clang\"" >> ~/.cargo/config.toml
-        echo "ar = \"${NDK_TOOLCHAIN}/llvm-ar\"" >> ~/.cargo/config.toml
-        
+
+        {
+          echo "[target.aarch64-linux-android]"
+          echo "linker = \"${NDK_TOOLCHAIN}/aarch64-linux-android24-clang\""
+          echo "ar = \"${NDK_TOOLCHAIN}/llvm-ar\""
+        } > ~/.cargo/config.toml
+
         cat ~/.cargo/config.toml
-        
+
         # Verify the toolchain exists
         ls -la "${NDK_TOOLCHAIN}/aarch64-linux-android24-clang" || echo "WARNING: clang not found!"
         ls "${NDK_TOOLCHAIN}/" | head -20
