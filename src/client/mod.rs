@@ -622,41 +622,11 @@ impl Client {
                 self.push_event(format!("[отключение] {reason}"));
                 self.disconnected = true;
             }
-            0x06 => {
-                // ResourcePacksInfo — parse pack IDs and respond "have all packs"
-                let info = parse_resource_packs_info(payload);
-                if let Some(info) = info {
-                    let mut entries = Vec::new();
-                    entries.extend(info.behavior);
-                    entries.extend(info.resources);
-                    // Build pack IDs in "id_version" format that the protocol expects
-                    self.pack_ids = entries.iter().map(|e| {
-                        if e.version.is_empty() {
-                            e.id.clone()
-                        } else {
-                            format!("{}_{}", e.id, e.version)
-                        }
-                    }).collect();
-                    self.packs.clear();
-                    self.sent_have_all_packs = false;
-
-                    if entries.is_empty() {
-                        self.sent_have_all_packs = true;
-                        self.send_resource_pack_response(3, &[])?;
-                    } else {
-                        // Respond "have all packs" (status 3) with each pack ID
-                        self.sent_have_all_packs = true;
-                        let ids = self.pack_ids.clone();
-                        self.send_resource_pack_response(3, &ids)?;
-                    }
-                } else {
-                    self.sent_have_all_packs = true;
-                    self.send_resource_pack_response(3, &[])?;
-                }
-            },
+            0x06 => self.on_packs(payload)?,
             0x07 => {
-                // ResourcePackStack — respond "completed" (status 4)
-                self.send_resource_pack_response(4, &[])?;
+                self.push_event("[packs] ResourcePackStack recibido, confirmando");
+                let ids = self.pack_ids.clone();
+                self.send_resource_pack_response(4, &ids)?;
                 if !self.sent_chunk_radius {
                     self.sent_chunk_radius = true;
                     self.send_request_chunk_radius(self.chunk_radius)?;
@@ -814,6 +784,7 @@ impl Client {
 
     fn on_packs(&mut self, payload: &[u8]) -> io::Result<()> {
         let Some(info) = parse_resource_packs_info(payload) else {
+            self.push_event("[packs] ResourcePacksInfo: no se pudo parsear, respondiendo vacio");
             return self.send_resource_pack_response(3, &[]);
         };
         let mut entries = Vec::new();
@@ -822,6 +793,12 @@ impl Client {
         self.pack_ids = entries.iter().map(|entry| entry.id.clone()).collect();
         self.packs.clear();
         self.sent_have_all_packs = false;
+
+        self.push_event(format!(
+            "[packs] ResourcePacksInfo: {} pack(s), must_accept={}",
+            entries.len(),
+            info.must_accept
+        ));
 
         if entries.is_empty() {
             self.sent_have_all_packs = true;
@@ -832,8 +809,15 @@ impl Client {
     }
 
     fn on_pack_info(&mut self, payload: &[u8]) -> io::Result<()> {
-        let Some(info) = parse_resource_pack_data_info(payload) else { return Ok(()) };
+        let Some(info) = parse_resource_pack_data_info(payload) else {
+            self.push_event("[packs] ResourcePackDataInfo: no se pudo parsear");
+            return Ok(());
+        };
         let chunk_count = info.chunk_count as usize;
+        self.push_event(format!(
+            "[packs] {}: tamano={} bytes, chunks={}, max_chunk={} bytes",
+            info.id, info.compressed_size, info.chunk_count, info.max_chunk_size
+        ));
         self.packs.insert(info.id.clone(), PackDl {
             max_chunk_size: info.max_chunk_size,
             chunk_count: info.chunk_count,
@@ -849,8 +833,12 @@ impl Client {
     }
 
     fn on_pack_chunk(&mut self, payload: &[u8]) -> io::Result<()> {
-        let Some(chunk) = parse_resource_pack_chunk_data(payload) else { return Ok(()) };
+        let Some(chunk) = parse_resource_pack_chunk_data(payload) else {
+            self.push_event("[packs] ResourcePackChunkData: no se pudo parsear");
+            return Ok(());
+        };
         let mut complete = false;
+        let mut progress: Option<(u32, u32)> = None;
         if let Some(download) = self.packs.get_mut(&chunk.id) {
             if download.in_flight > 0 { download.in_flight -= 1; }
             let index = chunk.index as usize;
@@ -859,8 +847,15 @@ impl Client {
                 download.received_count = download.received_count.saturating_add(1);
             }
             complete = download.complete();
+            progress = Some((download.received_count, download.chunk_count));
+        }
+        if let Some((received, total)) = progress {
+            if received == total || received % 10 == 0 {
+                self.push_event(format!("[packs] {}: {}/{} chunks", chunk.id, received, total));
+            }
         }
         if complete {
+            self.push_event(format!("[packs] {}: descarga completa, guardando...", chunk.id));
             self.save_completed_resource_pack(&chunk.id)?;
         }
         self.request_more_pack_chunks(&chunk.id)?;
@@ -898,22 +893,10 @@ impl Client {
         let is_zlib_ok = ZlibDecoder::new(&data[..]).read_to_end(&mut unpacked).is_ok();
         let to_save = if is_zlib_ok && !unpacked.is_empty() { unpacked } else { data };
 
-        // Save raw pack data
-        fs::write(format!("{}/pack.bin", folder), &to_save)?;
-
-        // Also save as .zip (the data IS a zip file in most MCPE resource packs)
-        // If the data starts with PK zip magic bytes, save directly as .zip
-        // Otherwise, wrap it in a zip
-        let zip_path = format!("target/resource_packs/{}.zip", sanitize_dump_part(pack_id));
-        if to_save.len() >= 4 && to_save[0] == 0x50 && to_save[1] == 0x4b {
-            // Already a zip file — save directly
-            fs::write(&zip_path, &to_save)?;
-            bot(&format!("Resource pack saved as zip: {}", zip_path));
-        } else {
-            // Not a zip — save raw and try to create a zip wrapper
-            fs::write(&zip_path, &to_save)?;
-            bot(&format!("Resource pack saved (raw): {}", zip_path));
-        }
+        // Guardar como .mcpack (es un zip válido, Minecraft lo abre directo)
+        let mcpack_path = format!("{}/pack.mcpack", folder);
+        fs::write(&mcpack_path, &to_save)?;
+        self.push_event(format!("[packs] {}: guardado en {}", pack_id, mcpack_path));
 
         Ok(())
     }
@@ -925,6 +908,7 @@ impl Client {
         });
         if all_done {
             self.sent_have_all_packs = true;
+            self.push_event("[packs] todos completos, enviando HAVE_ALL_PACKS");
             let ids = self.pack_ids.clone();
             self.send_resource_pack_response(3, &ids)?;
         }
