@@ -20,7 +20,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Install Rust toolchain + aarch64-linux-android target
+    - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
       with:
         targets: aarch64-linux-android
@@ -30,17 +30,37 @@ jobs:
       id: setup_ndk
       with:
         ndk-version: r26d
-        add-to-path: false
+        add-to-path: true
 
     - name: Configure cargo for aarch64-linux-android
       run: |
         mkdir -p ~/.cargo
-        cat > ~/.cargo/config.toml << 'EOF'
+        NDK_TOOLCHAIN="${{ steps.setup_ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        
+        cat > ~/.cargo/config.toml << EOF
         [target.aarch64-linux-android]
-        linker = "${{ steps.setup_ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
-        ar = "${{ steps.setup_ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+        linker = "${NDK_TOOLCHAIN}/aarch64-linux-android24-clang"
+        ar = "${NDK_TOOLCHAIN}/llvm-ar"
+        cc = "${NDK_TOOLCHAIN}/aarch64-linux-android24-clang"
+        cxx = "${NDK_TOOLCHAIN}/aarch64-linux-android24-clang++"
+        ranlib = "${NDK_TOOLCHAIN}/llvm-ranlib"
         EOF
+        
         cat ~/.cargo/config.toml
+        
+        # Verify the toolchain exists
+        ls -la "${NDK_TOOLCHAIN}/aarch64-linux-android24-clang" || echo "WARNING: clang not found!"
+        ls "${NDK_TOOLCHAIN}/" | head -20
+
+    - name: Set environment variables for NDK
+      run: |
+        NDK_TOOLCHAIN="${{ steps.setup_ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        echo "CC_aarch64_linux_android=${NDK_TOOLCHAIN}/aarch64-linux-android24-clang" >> $GITHUB_ENV
+        echo "CXX_aarch64_linux_android=${NDK_TOOLCHAIN}/aarch64-linux-android24-clang++" >> $GITHUB_ENV
+        echo "AR_aarch64_linux_android=${NDK_TOOLCHAIN}/llvm-ar" >> $GITHUB_ENV
+        echo "RANLIB_aarch64_linux_android=${NDK_TOOLCHAIN}/llvm-ranlib" >> $GITHUB_ENV
+        echo "PATH=${NDK_TOOLCHAIN}:${PATH}" >> $GITHUB_ENV
+        echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--sysroot=${{ steps.setup_ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
 
     - name: Cache Cargo
       uses: actions/cache@v4
