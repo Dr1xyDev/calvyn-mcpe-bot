@@ -805,7 +805,8 @@ impl Client {
         }
 
         // Avisamos al servidor que iniciamos la descarga de los IDs
-        self.send_resource_pack_response(2, &self.pack_ids)?;
+        let ids = self.pack_ids.clone();
+        self.send_resource_pack_response(2, &ids)?;
         Ok(())
     }
 
