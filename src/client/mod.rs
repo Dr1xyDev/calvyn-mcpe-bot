@@ -783,34 +783,34 @@ impl Client {
 
     fn on_packs(&mut self, payload: &[u8]) -> io::Result<()> {
         let Some(info) = parse_resource_packs_info(payload) else {
-            self.push_event("[packs] ResourcePacksInfo: no se pudo parsear, respondiendo vacío");
+            self.push_event("[packs] ResourcePacksInfo: no se pudo parsear, respondiendo vacio");
             return self.send_resource_pack_response(3, &[]);
         };
+
         let mut entries = Vec::new();
         entries.extend(info.behavior);
         entries.extend(info.resources);
 
-        self.pack_ids = entries.iter().map(|entry| entry.id.clone()).collect();
-        self.packs.clear();
-
-        // No saltamos la descarga: dejamos que on_pack_info/on_pack_chunk
-        // hagan avanzar la descarga real y decidan cuándo mandar HAVE_ALL_PACKS.
-        self.sent_have_all_packs = false;
+        let ids: Vec<String> = entries.iter().map(|entry| entry.id.clone()).collect();
 
         self.push_event(format!(
-            "[packs] ResourcePacksInfo: {} pack(s) detectados, must_accept={}. Iniciando descarga...",
-            entries.len(),
-            info.must_accept
+            "[packs] ResourcePacksInfo: {} pack(s) detectados. Enviando ACCEPT...",
+            ids.len()
         ));
 
-        if entries.is_empty() {
-            self.sent_have_all_packs = true;
+        if ids.is_empty() {
             return self.send_resource_pack_response(3, &[]);
         }
 
-        // Status 2 = aceptar los packs / iniciar descarga (en vez de decir que ya los tenemos)
-        let ids: Vec<String> = entries.into_iter().map(|entry| entry.id).collect();
-        self.send_resource_pack_response(2, &ids)
+        // Primero le decimos al servidor que SÍ aceptamos (Estado 2) para que no nos eche
+        self.send_resource_pack_response(2, &ids)?;
+
+        // Luego configuramos las variables internas para recibir los datos
+        self.pack_ids = ids;
+        self.packs.clear();
+        self.sent_have_all_packs = false;
+
+        Ok(())
     }
 
     fn on_pack_info(&mut self, payload: &[u8]) -> io::Result<()> {
