@@ -1,0 +1,108 @@
+name: Build and Test Bot
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build bot
+      run: cargo build --release
+
+    - name: Run bot against play.wactigo.net
+      run: |
+        echo "Starting bot connection to play.wactigo.net:19132..."
+        timeout 120 ./target/release/bot -h play.wactigo.net -p 19132 -n WactigoTestBot || true
+        
+        echo "=== Bot session ended ==="
+        echo "Checking for downloaded resource packs..."
+        ls -la target/resource_packs/ || echo "No resource_packs directory found"
+        find target/resource_packs/ -type f || echo "No files in resource_packs"
+
+    - name: Package resource packs into zip
+      if: always()
+      run: |
+        echo "Packaging resource packs..."
+        mkdir -p artifacts
+        
+        if [ -d "target/resource_packs" ] && [ "$(ls -A target/resource_packs 2>/dev/null)" ]; then
+          echo "Found resource packs, creating zip..."
+          
+          # Create a zip with all downloaded resource packs
+          cd target/resource_packs
+          zip -r ../../artifacts/resource_packs.zip . || true
+          cd ../..
+          
+          # Also create individual zips for each pack
+          for dir in target/resource_packs/*/; do
+            if [ -d "$dir" ]; then
+              pack_name=$(basename "$dir")
+              echo "Packaging pack: $pack_name"
+              cd "$dir"
+              zip -r "../../../artifacts/${pack_name}.zip" . || true
+              cd ../../..
+            fi
+          done
+          
+          echo "=== Resource pack contents ==="
+          find target/resource_packs/ -type f -exec ls -la {} \;
+        else
+          echo "No resource packs were downloaded. Creating empty marker."
+          echo "No resource packs downloaded" > artifacts/no_packs.txt
+        fi
+        
+        # Also save the bot binary
+        cp target/release/bot artifacts/bot || true
+        
+        # Save packet logs if they exist
+        if ls *.pkt 2>/dev/null; then
+          zip artifacts/packet_logs.zip *.pkt || true
+        fi
+        
+        ls -la artifacts/
+
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: bot-resource-packs
+        path: artifacts/
+        retention-days: 30
+        if-no-files-found: warn
+
+    - name: Summary
+      if: always()
+      run: |
+        echo "=== Build and Test Summary ==="
+        echo "Bot binary: $(file target/release/bot 2>/dev/null || echo 'not found')"
+        echo ""
+        echo "Resource packs downloaded:"
+        if [ -d "target/resource_packs" ]; then
+          find target/resource_packs/ -type f -exec echo "  - {}" \;
+        else
+          echo "  (none)"
+        fi
+        echo ""
+        echo "Artifacts created:"
+        ls -la artifacts/ 2>/dev/null || echo "  (none)"
