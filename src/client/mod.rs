@@ -623,14 +623,40 @@ impl Client {
                 self.disconnected = true;
             }
             0x06 => {
-                // ResourcePacksInfo — skip downloading, immediately say "have all packs"
-                // This works for Submarine/multi-version servers that don't verify
-                self.sent_have_all_packs = true;
-                self.send_resource_pack_response(3, &[])?;
+                // ResourcePacksInfo — parse pack IDs and respond "have all packs"
+                let info = parse_resource_packs_info(payload);
+                if let Some(info) = info {
+                    let mut entries = Vec::new();
+                    entries.extend(info.behavior);
+                    entries.extend(info.resources);
+                    // Build pack IDs in "id_version" format that the protocol expects
+                    self.pack_ids = entries.iter().map(|e| {
+                        if e.version.is_empty() {
+                            e.id.clone()
+                        } else {
+                            format!("{}_{}", e.id, e.version)
+                        }
+                    }).collect();
+                    self.packs.clear();
+                    self.sent_have_all_packs = false;
+
+                    if entries.is_empty() {
+                        self.sent_have_all_packs = true;
+                        self.send_resource_pack_response(3, &[])?;
+                    } else {
+                        // Respond "have all packs" (status 3) with each pack ID
+                        self.sent_have_all_packs = true;
+                        let ids = self.pack_ids.clone();
+                        self.send_resource_pack_response(3, &ids)?;
+                    }
+                } else {
+                    self.sent_have_all_packs = true;
+                    self.send_resource_pack_response(3, &[])?;
+                }
             },
             0x07 => {
-                let ids = self.pack_ids.clone();
-                self.send_resource_pack_response(4, &ids)?;
+                // ResourcePackStack — respond "completed" (status 4)
+                self.send_resource_pack_response(4, &[])?;
                 if !self.sent_chunk_radius {
                     self.sent_chunk_radius = true;
                     self.send_request_chunk_radius(self.chunk_radius)?;
