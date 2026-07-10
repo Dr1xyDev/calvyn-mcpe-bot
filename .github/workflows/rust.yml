@@ -37,14 +37,13 @@ jobs:
         mkdir -p ~/.cargo
         NDK_TOOLCHAIN="${{ steps.setup_ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
         
-        cat > ~/.cargo/config.toml << EOF
-        [target.aarch64-linux-android]
-        linker = "${NDK_TOOLCHAIN}/aarch64-linux-android24-clang"
-        ar = "${NDK_TOOLCHAIN}/llvm-ar"
-        cc = "${NDK_TOOLCHAIN}/aarch64-linux-android24-clang"
-        cxx = "${NDK_TOOLCHAIN}/aarch64-linux-android24-clang++"
-        ranlib = "${NDK_TOOLCHAIN}/llvm-ranlib"
-        EOF
+        cat > ~/.cargo/config.toml << 'TOMLEOF'
+[target.aarch64-linux-android]
+TOMLEOF
+        
+        # Append linker and ar (valid cargo config keys)
+        echo "linker = \"${NDK_TOOLCHAIN}/aarch64-linux-android24-clang\"" >> ~/.cargo/config.toml
+        echo "ar = \"${NDK_TOOLCHAIN}/llvm-ar\"" >> ~/.cargo/config.toml
         
         cat ~/.cargo/config.toml
         
