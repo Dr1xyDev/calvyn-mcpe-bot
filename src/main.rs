@@ -17,6 +17,7 @@ fn parse_args() -> Config {
         port: 19132,
         name: format!("CalvynBot{:04}", ms_now() % 10_000),
         protocol: VER,
+        count: 1,
     };
 
     let mut args = std::env::args().skip(1);
@@ -35,6 +36,11 @@ fn parse_args() -> Config {
             "-n" => {
                 if let Some(value) = args.next() {
                     cfg.name = value;
+                }
+            }
+            "-c" => {
+                if let Some(value) = args.next() {
+                    cfg.count = value.parse().unwrap_or(1).max(1);
                 }
             }
             _ => {}
