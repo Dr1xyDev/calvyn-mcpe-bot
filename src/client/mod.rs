@@ -831,10 +831,8 @@ impl Client {
             saved: false,
         });
 
-        // CRUCIAL: Pedir explícitamente el chunk 0 apenas nos llega la info
-        self.send_resource_pack_chunk_request(&info.id, 0)?;
-
-        // Luego dejamos que la cola asíncrona pida el resto si los hay
+        // request_more_pack_chunks ya pide el chunk 0 (y los siguientes hasta el límite
+        // de in_flight) desde next_request=0. No hay que pedirlo aparte, o se duplica.
         self.request_more_pack_chunks(&info.id)?;
         Ok(())
     }
