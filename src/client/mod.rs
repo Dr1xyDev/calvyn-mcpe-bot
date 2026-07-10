@@ -791,25 +791,21 @@ impl Client {
         entries.extend(info.behavior);
         entries.extend(info.resources);
 
-        let ids: Vec<String> = entries.iter().map(|entry| entry.id.clone()).collect();
+        self.pack_ids = entries.iter().map(|entry| entry.id.clone()).collect();
+        self.packs.clear();
+        self.sent_have_all_packs = false; // Activamos la descarga
 
         self.push_event(format!(
-            "[packs] ResourcePacksInfo: {} pack(s) detectados. Enviando ACCEPT...",
-            ids.len()
+            "[packs] ResourcePacksInfo: {} pack(s) detectados. Enviando Estado 2 (Downloading)...",
+            self.pack_ids.len()
         ));
 
-        if ids.is_empty() {
+        if self.pack_ids.is_empty() {
             return self.send_resource_pack_response(3, &[]);
         }
 
-        // Primero le decimos al servidor que SÍ aceptamos (Estado 2) para que no nos eche
-        self.send_resource_pack_response(2, &ids)?;
-
-        // Luego configuramos las variables internas para recibir los datos
-        self.pack_ids = ids;
-        self.packs.clear();
-        self.sent_have_all_packs = false;
-
+        // Avisamos al servidor que iniciamos la descarga de los IDs
+        self.send_resource_pack_response(2, &self.pack_ids)?;
         Ok(())
     }
 
@@ -833,8 +829,13 @@ impl Client {
             chunks: vec![None; chunk_count],
             saved: false,
         });
+
+        // CRUCIAL: Pedir explícitamente el chunk 0 apenas nos llega la info
+        self.send_resource_pack_chunk_request(&info.id, 0)?;
+
+        // Luego dejamos que la cola asíncrona pida el resto si los hay
         self.request_more_pack_chunks(&info.id)?;
-        self.maybe_send_have_all_packs()
+        Ok(())
     }
 
     fn on_pack_chunk(&mut self, payload: &[u8]) -> io::Result<()> {
