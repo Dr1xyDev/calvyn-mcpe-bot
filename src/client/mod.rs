@@ -783,28 +783,34 @@ impl Client {
 
     fn on_packs(&mut self, payload: &[u8]) -> io::Result<()> {
         let Some(info) = parse_resource_packs_info(payload) else {
-            self.push_event("[packs] ResourcePacksInfo: no se pudo parsear, respondiendo vacio");
+            self.push_event("[packs] ResourcePacksInfo: no se pudo parsear, respondiendo vacío");
             return self.send_resource_pack_response(3, &[]);
         };
         let mut entries = Vec::new();
         entries.extend(info.behavior);
         entries.extend(info.resources);
+
         self.pack_ids = entries.iter().map(|entry| entry.id.clone()).collect();
         self.packs.clear();
-        self.sent_have_all_packs = true; // Skip download, say "have all" immediately
+
+        // No saltamos la descarga: dejamos que on_pack_info/on_pack_chunk
+        // hagan avanzar la descarga real y decidan cuándo mandar HAVE_ALL_PACKS.
+        self.sent_have_all_packs = false;
 
         self.push_event(format!(
-            "[packs] ResourcePacksInfo: {} pack(s), must_accept={}, saltando descarga",
+            "[packs] ResourcePacksInfo: {} pack(s) detectados, must_accept={}. Iniciando descarga...",
             entries.len(),
             info.must_accept
         ));
 
         if entries.is_empty() {
+            self.sent_have_all_packs = true;
             return self.send_resource_pack_response(3, &[]);
         }
-        // Respond "have all packs" (status 3) with each pack ID — skip downloading
+
+        // Status 2 = aceptar los packs / iniciar descarga (en vez de decir que ya los tenemos)
         let ids: Vec<String> = entries.into_iter().map(|entry| entry.id).collect();
-        self.send_resource_pack_response(3, &ids)
+        self.send_resource_pack_response(2, &ids)
     }
 
     fn on_pack_info(&mut self, payload: &[u8]) -> io::Result<()> {
@@ -814,7 +820,7 @@ impl Client {
         };
         let chunk_count = info.chunk_count as usize;
         self.push_event(format!(
-            "[packs] {}: tamano={} bytes, chunks={}, max_chunk={} bytes",
+            "[packs] Descargando {}: tamaño={} bytes, chunks={}, max_chunk={} bytes",
             info.id, info.compressed_size, info.chunk_count, info.max_chunk_size
         ));
         self.packs.insert(info.id.clone(), PackDl {
@@ -837,7 +843,9 @@ impl Client {
             return Ok(());
         };
         let mut complete = false;
+        let pack_id_clone = chunk.id.clone();
         let mut progress: Option<(u32, u32)> = None;
+
         if let Some(download) = self.packs.get_mut(&chunk.id) {
             if download.in_flight > 0 { download.in_flight -= 1; }
             let index = chunk.index as usize;
@@ -848,16 +856,19 @@ impl Client {
             complete = download.complete();
             progress = Some((download.received_count, download.chunk_count));
         }
+
         if let Some((received, total)) = progress {
-            if received == total || received % 10 == 0 {
-                self.push_event(format!("[packs] {}: {}/{} chunks", chunk.id, received, total));
+            if received == total || received % 20 == 0 { // Log cada 20 fragmentos para no saturar
+                self.push_event(format!("[packs] {}: {}/{} chunks descargados", pack_id_clone, received, total));
             }
         }
+
         if complete {
-            self.push_event(format!("[packs] {}: descarga completa, guardando...", chunk.id));
-            self.save_completed_resource_pack(&chunk.id)?;
+            self.push_event(format!("[packs] {}: ¡Descarga completa! Guardando archivo...", pack_id_clone));
+            self.save_completed_resource_pack(&pack_id_clone)?;
         }
-        self.request_more_pack_chunks(&chunk.id)?;
+
+        self.request_more_pack_chunks(&pack_id_clone)?;
         self.maybe_send_have_all_packs()
     }
 
@@ -895,11 +906,11 @@ impl Client {
         // Guardar como .mcpack y .zip
         let mcpack_path = format!("{}/pack.mcpack", folder);
         fs::write(&mcpack_path, &to_save)?;
-        
+
         // Tambien guardar como .zip en la carpeta principal
         let zip_path = format!("target/resource_packs/{}.zip", sanitize_dump_part(pack_id));
         fs::write(&zip_path, &to_save)?;
-        
+
         self.push_event(format!("[packs] {}: guardado en {} y {}", pack_id, mcpack_path, zip_path));
 
         Ok(())
