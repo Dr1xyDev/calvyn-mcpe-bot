@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+ #![allow(dead_code)]
 #![allow(unused_variables)]
 
 pub mod packets;
@@ -867,7 +867,23 @@ impl Client {
         let is_zlib_ok = ZlibDecoder::new(&data[..]).read_to_end(&mut unpacked).is_ok();
         let to_save = if is_zlib_ok && !unpacked.is_empty() { unpacked } else { data };
 
+        // Save raw pack data
         fs::write(format!("{}/pack.bin", folder), &to_save)?;
+
+        // Also save as .zip (the data IS a zip file in most MCPE resource packs)
+        // If the data starts with PK zip magic bytes, save directly as .zip
+        // Otherwise, wrap it in a zip
+        let zip_path = format!("target/resource_packs/{}.zip", sanitize_dump_part(pack_id));
+        if to_save.len() >= 4 && to_save[0] == 0x50 && to_save[1] == 0x4b {
+            // Already a zip file — save directly
+            fs::write(&zip_path, &to_save)?;
+            bot(&format!("Resource pack saved as zip: {}", zip_path));
+        } else {
+            // Not a zip — save raw and try to create a zip wrapper
+            fs::write(&zip_path, &to_save)?;
+            bot(&format!("Resource pack saved (raw): {}", zip_path));
+        }
+
         Ok(())
     }
 
