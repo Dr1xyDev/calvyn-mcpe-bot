@@ -625,8 +625,7 @@ impl Client {
             0x06 => self.on_packs(payload)?,
             0x07 => {
                 self.push_event("[packs] ResourcePackStack recibido, confirmando");
-                let ids = self.pack_ids.clone();
-                self.send_resource_pack_response(4, &ids)?;
+                self.send_resource_pack_response(4, &[])?;
                 if !self.sent_chunk_radius {
                     self.sent_chunk_radius = true;
                     self.send_request_chunk_radius(self.chunk_radius)?;
@@ -792,20 +791,20 @@ impl Client {
         entries.extend(info.resources);
         self.pack_ids = entries.iter().map(|entry| entry.id.clone()).collect();
         self.packs.clear();
-        self.sent_have_all_packs = false;
+        self.sent_have_all_packs = true; // Skip download, say "have all" immediately
 
         self.push_event(format!(
-            "[packs] ResourcePacksInfo: {} pack(s), must_accept={}",
+            "[packs] ResourcePacksInfo: {} pack(s), must_accept={}, saltando descarga",
             entries.len(),
             info.must_accept
         ));
 
         if entries.is_empty() {
-            self.sent_have_all_packs = true;
             return self.send_resource_pack_response(3, &[]);
         }
+        // Respond "have all packs" (status 3) with each pack ID — skip downloading
         let ids: Vec<String> = entries.into_iter().map(|entry| entry.id).collect();
-        self.send_resource_pack_response(2, &ids)
+        self.send_resource_pack_response(3, &ids)
     }
 
     fn on_pack_info(&mut self, payload: &[u8]) -> io::Result<()> {
@@ -893,10 +892,15 @@ impl Client {
         let is_zlib_ok = ZlibDecoder::new(&data[..]).read_to_end(&mut unpacked).is_ok();
         let to_save = if is_zlib_ok && !unpacked.is_empty() { unpacked } else { data };
 
-        // Guardar como .mcpack (es un zip válido, Minecraft lo abre directo)
+        // Guardar como .mcpack y .zip
         let mcpack_path = format!("{}/pack.mcpack", folder);
         fs::write(&mcpack_path, &to_save)?;
-        self.push_event(format!("[packs] {}: guardado en {}", pack_id, mcpack_path));
+        
+        // Tambien guardar como .zip en la carpeta principal
+        let zip_path = format!("target/resource_packs/{}.zip", sanitize_dump_part(pack_id));
+        fs::write(&zip_path, &to_save)?;
+        
+        self.push_event(format!("[packs] {}: guardado en {} y {}", pack_id, mcpack_path, zip_path));
 
         Ok(())
     }
