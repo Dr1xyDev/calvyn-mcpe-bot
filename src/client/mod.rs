@@ -25,6 +25,10 @@ pub fn is_interrupted() -> bool {
     INTERRUPTED.load(Ordering::SeqCst)
 }
 
+pub fn set_interrupted() {
+    INTERRUPTED.store(true, Ordering::SeqCst);
+}
+
 use crate::colors::mc_to_ansi;
 use crate::crypto::{AuthKey, EncryptionState};
 use crate::log::{srv, bot, rak, net, cry, err};
@@ -389,6 +393,29 @@ impl Client {
         chat_rx: Option<Receiver<String>>,
         interrupt_rx: Option<Receiver<()>>,
     ) -> io::Result<()> {
+        self.run_inner(timeout_secs, chat_rx, interrupt_rx, true)
+    }
+
+    /// Igual que `run`, pero permite desactivar la lectura de eventos de teclado
+    /// (crossterm). Útil cuando corren varios bots en hilos distintos: todos
+    /// compartirían el mismo terminal y competirían por los mismos eventos de
+    /// teclado, lo cual da un comportamiento errático al cortar con Ctrl+C.
+    pub fn run_headless(
+        &mut self,
+        timeout_secs: u64,
+        chat_rx: Option<Receiver<String>>,
+        interrupt_rx: Option<Receiver<()>>,
+    ) -> io::Result<()> {
+        self.run_inner(timeout_secs, chat_rx, interrupt_rx, false)
+    }
+
+    fn run_inner(
+        &mut self,
+        timeout_secs: u64,
+        chat_rx: Option<Receiver<String>>,
+        interrupt_rx: Option<Receiver<()>>,
+        read_keyboard: bool,
+    ) -> io::Result<()> {
         self.socket.set_read_timeout(Some(Duration::from_millis(500)))?;
         let deadline = if timeout_secs == 0 {
             None
@@ -433,7 +460,7 @@ impl Client {
             self.maybe_mark_spawned_fallback();
             self.resend()?;
 
-            if event::poll(Duration::from_millis(0))? {
+            if read_keyboard && event::poll(Duration::from_millis(0))? {
                 if let Event::Key(key) = event::read()? {
                     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                         bot("завершено");
